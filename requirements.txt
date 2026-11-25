@@ -1,0 +1,10 @@
+streamlit==1.52.2
+mediapipe==0.10.21
+opencv-contrib-python==4.11.0.86
+numpy==1.26.4
+# Keep Streamlit's preview component compatible with NumPy 1.26.
+pyarrow==21.0.0
+Pillow>=10.4,<12
+imageio-ffmpeg==0.6.0
+jax==0.4.35
+jaxlib==0.4.35
