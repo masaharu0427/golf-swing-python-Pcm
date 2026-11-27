@@ -56,7 +56,7 @@ FRONT_ONLY_LINES = ("right_leg_outer", "right_knee_circle", "left_knee_circle")
 DEFAULT_LINES = ["head", "spine", "shoulders", "shaft", "hip", *REAR_ONLY_LINES, "pelvis_circle"]
 FRONT_DEFAULT_LINES = ["tilt", "shoulders", "ankles", "pelvis_circle"]
 SHOULDER_POSITIONS = {"front": ["P1", "P7"], "back": ["P4", "P8", "P9"]}
-PELVIS_IRON_RANGES = {
+PELVIS_RANGES = {
     "male": {
         "P2": (-3.3, 0.3), "P3": (-4.3, 0.3), "P4": (-2.5, 2.5),
         "P5": (3.3, 8.4), "P6": (7.6, 12.7), "P7": (9.4, 15.0),
@@ -67,6 +67,20 @@ PELVIS_IRON_RANGES = {
         "P5": (2.0, 6.6), "P6": (5.8, 10.4), "P7": (6.9, 11.9),
         "P8": (7.6, 12.7),
     },
+    "male_driver": {
+        "P2": (-5.6, -1.5), "P3": (-6.3, -1.8), "P4": (-4.3, 1.3),
+        "P5": (1.5, 8.1), "P6": (5.3, 13.5), "P7": (7.1, 15.7),
+        "P8": (8.6, 18.3),
+    },
+    "female_driver": {
+        "P2": (-5.1, -1.5), "P3": (-5.8, -1.8), "P4": (-4.6, -0.5),
+        "P5": (1.0, 5.1), "P6": (4.6, 9.7), "P7": (5.6, 11.7),
+        "P8": (6.4, 14.0),
+    },
+}
+PELVIS_PROFILE_LABELS = {
+    "male": "男性アイアン", "female": "女性アイアン",
+    "male_driver": "男性ドライバー", "female_driver": "女性ドライバー",
 }
 RIGHT_LEG_POINTS = ("right_ankle_outer", "right_thigh_outer")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
@@ -550,7 +564,7 @@ def pelvis_displacement_labels(job: dict, code: str, cm_per_px: float) -> tuple[
 
 def pelvis_value_color(job: dict, code: str, horizontal: str) -> str:
     profile = job.get("pelvis_iron_profile", job.get("sportsbox_iron_profile", "male"))
-    bounds = PELVIS_IRON_RANGES.get(profile, PELVIS_IRON_RANGES["male"]).get(code)
+    bounds = PELVIS_RANGES.get(profile, PELVIS_RANGES["male"]).get(code)
     return range_value_color(float(horizontal), bounds) if bounds and horizontal != "—" else "white"
 
 
@@ -2718,7 +2732,7 @@ def store_pelvis_overlay(key: str) -> None:
     clear_outputs()
 
 
-def store_pelvis_iron_profile(key: str) -> None:
+def store_pelvis_profile(key: str) -> None:
     st.session_state["job"]["pelvis_iron_profile"] = st.session_state[key]
     clear_outputs()
 
@@ -2740,10 +2754,11 @@ def render_pelvis_measurement(job: dict, code: str) -> None:
     if show_overlay or measure:
         profile_key = f"pelvis_iron_profile_{token}"
         profile = job.setdefault("pelvis_iron_profile", job.get("sportsbox_iron_profile", "male"))
+        profiles = list(PELVIS_PROFILE_LABELS)
         st.radio(
-            "腰の左右移動量の判定基準", tuple(PELVIS_IRON_RANGES),
-            index=list(PELVIS_IRON_RANGES).index(profile), format_func=SPORTSBOX_IRON_LABELS.__getitem__,
-            key=profile_key, horizontal=True, on_change=store_pelvis_iron_profile, args=(profile_key,),
+            "腰の左右移動量の判定基準", profiles,
+            index=profiles.index(profile), format_func=PELVIS_PROFILE_LABELS.__getitem__,
+            key=profile_key, horizontal=True, on_change=store_pelvis_profile, args=(profile_key,),
         )
     if not measure:
         if show_overlay and pelvis_overlay(job, code) is None:
