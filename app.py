@@ -519,28 +519,22 @@ def rod_length_px(points: list, width: int, height: int) -> float:
     return math.hypot((end[0] - start[0]) * width, (end[1] - start[1]) * height)
 
 
-def pelvis_displacement_cm(reference, current, width: int, height: int, cm_per_px: float):
-    if reference is None or current is None:
-        return None
-    return (
-        (current[0] - reference[0]) * width * cm_per_px,
-        (reference[1] - current[1]) * height * cm_per_px,
-    )
-
-
 def pelvis_displacement_labels(job: dict, code: str, cm_per_px: float) -> tuple[str, str]:
     track = pelvis_track(job)
-    frames, info = job["p_frames"], job["info"]
-    displacement = pelvis_displacement_cm(
-        track[frames["P1"]], track[frames[code]], info["width"], info["height"], cm_per_px,
-    )
-    if displacement is None:
+    frames = job["p_frames"]
+    reference, current = track[frames["P1"]], track[frames[code]]
+    if reference is None or current is None:
         return "—", "—"
-    horizontal, vertical = (f"{value:+.1f}" if round(value, 1) else "0.0" for value in displacement)
-    return horizontal, vertical
+    info = job["info"]
+    horizontal = (current[0] - reference[0]) * info["width"] * cm_per_px
+    vertical = (reference[1] - current[1]) * info["height"] * cm_per_px
+    horizontal_label, vertical_label = (
+        f"{value:+.1f}" if round(value, 1) else "0.0" for value in (horizontal, vertical)
+    )
+    return horizontal_label, vertical_label
 
 
-def pelvis_overlay(job: dict, code: str) -> tuple[str, str] | None:
+def pelvis_overlay(job: dict, code: str) -> str | None:
     if not job.get("show_pelvis_overlay"):
         return None
     calibration = job.get("pelvis_calibration", {})
@@ -551,8 +545,8 @@ def pelvis_overlay(job: dict, code: str) -> tuple[str, str] | None:
     length_px = rod_length_px(points, info["width"], info["height"])
     if length_px < 30:
         return None
-    horizontal, vertical = pelvis_displacement_labels(job, code, calibration["length_cm"] / length_px)
-    return f"腰 左右 {horizontal} cm", f"　 上下 {vertical} cm"
+    horizontal, _ = pelvis_displacement_labels(job, code, calibration["length_cm"] / length_px)
+    return f"腰 左右 {horizontal} cm"
 
 
 def sway_circles(job: dict, frame: int, style: dict, code: str) -> list:
@@ -745,7 +739,7 @@ def draw_annotations(frame: np.ndarray, shapes: list, label: str | None = None,
                      phase_note: str = "",
                      note_position: tuple[float, float] | list[float] = DEFAULT_PHASE_NOTE_POSITION,
                      note_style: dict | None = None,
-                     pelvis_lines: tuple[str, str] | None = None) -> np.ndarray:
+                     pelvis_text: str | None = None) -> np.ndarray:
     im = Image.fromarray(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(im)
     w,h = im.size
@@ -840,7 +834,7 @@ def draw_annotations(frame: np.ndarray, shapes: list, label: str | None = None,
         x = math.floor(max(0, w - overlay.width) * note_position[0] + .5)
         y = math.floor(max(0, h - overlay.height) * note_position[1] + .5)
         im.paste(overlay, (x, y), overlay)
-    if pelvis_lines:
+    if pelvis_text:
         size = max(8, min(max(15, round(h * .028)), w // 17))
         font = pil_font(size)
         stroke = max(1, round(size * .08))
@@ -848,14 +842,11 @@ def draw_annotations(frame: np.ndarray, shapes: list, label: str | None = None,
         pad = max(3, round(size * .25))
         x = margin
         y = 12 + max(22, round(36 * h / 1080)) + pad
-        values = "\n".join(pelvis_lines)
-        box = draw.multiline_textbbox((x, y), values, font=font, spacing=pad, stroke_width=stroke)
-        left, top, right, bottom = box
+        left, top, right, bottom = draw.textbbox((x, y), pelvis_text, font=font, stroke_width=stroke)
         ImageDraw.Draw(im, "RGBA").rectangle(
             (left - pad, top - pad, right + pad, bottom + pad), fill=(0, 0, 0, 166),
         )
-        draw.multiline_text((x, y), values, fill="white", font=font, spacing=pad,
-                            stroke_width=stroke, stroke_fill="black")
+        draw.text((x, y), pelvis_text, fill="white", font=font, stroke_width=stroke, stroke_fill="black")
     return cv2.cvtColor(np.asarray(im),cv2.COLOR_RGB2BGR)
 
 
@@ -896,7 +887,7 @@ def export_video(job: dict, cfg: dict, durations: dict[str, float], custom_posit
                 paused=draw_annotations(frame,primitives_for(job,i,cfg,code,custom_positions),
                                         code,sportsbox_overlay(job,code),phase_note=notes.get(code, ""),
                                         note_position=note_positions.get(code, DEFAULT_PHASE_NOTE_POSITION),
-                                        note_style=note_styles.get(code), pelvis_lines=pelvis_overlay(job, code))
+                                        note_style=note_styles.get(code), pelvis_text=pelvis_overlay(job, code))
                 for _ in range(hold_frames):writer.write(paused)
             if progress and i%10==0:progress((i+1)/info["frames"],f"動画を書き出し中 {i+1}/{info['frames']}")
         completed=True
@@ -961,12 +952,12 @@ def export_images(job: dict,cfg: dict,codes: list,custom_positions: list) -> dic
         for k, (code, annotated) in enumerate(zip(codes, annotated_frames)):
             cropped = annotated[top:h - bottom, left:w - right]
             note = notes.get(code, "")
-            pelvis_lines = pelvis_overlay(job, code)
-            if note or pelvis_lines:
+            pelvis_text = pelvis_overlay(job, code)
+            if note or pelvis_text:
                 cropped = draw_annotations(
                     cropped, [], phase_note=note,
                     note_position=note_positions.get(code, DEFAULT_PHASE_NOTE_POSITION),
-                    note_style=note_styles.get(code), pelvis_lines=pelvis_lines,
+                    note_style=note_styles.get(code), pelvis_text=pelvis_text,
                 )
             ok, png = cv2.imencode(".png", cropped)
             if not ok:
@@ -1365,8 +1356,8 @@ function returnToEditor(id){
 }
 img.onload=()=>{render();height();};noteImage.onload=render;window.addEventListener('message',e=>{if(e.source!==window.parent||e.data.type!=='streamlit:render')return;args=e.data.args;
 const pelvis=$('pelvisOverlay');
-pelvis.hidden=!args.pelvis_lines;
-pelvis.textContent=(args.pelvis_lines||[]).join('\n');
+pelvis.hidden=!args.pelvis_text;
+pelvis.textContent=args.pelvis_text||'';
 $('phaseSelect').value=args.phase;$('phaseSelect').disabled=!!(lastEvent&&args.ack!==lastEvent);returnToEditor(args.restore_view);const newScene=args.scene!==scene;scene=args.scene;g=clone(args.guides);body=clone(args.body);shapes=clone(args.shapes);notePosition=args.note_position;
 if(args.note_image){
     const noteSrc='data:image/png;base64,'+args.note_image;
@@ -2491,61 +2482,155 @@ mobile_scrollbar = st.components.v2.component(
 
 calibration_picker = st.components.v2.component(
     "golf_calibration_picker",
-    html="""<canvas aria-label="基準棒の両端を指定する映像"></canvas>""",
-    css="""canvas {display: block; max-width: 100%; height: auto; cursor: crosshair;}""",
+    html="""
+    <canvas aria-label="基準棒の両端を指定する映像"></canvas>
+    <div class="rod-actions">
+        <button type="button" id="rod-undo">↶ 元に戻す</button>
+        <button type="button" id="rod-reset">2点を指定し直す</button>
+    </div>
+    """,
+    css="""
+    canvas {display: block; max-width: 100%; height: auto; cursor: crosshair; touch-action: none;}
+    .rod-actions {display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem;}
+    button {font: inherit; color: inherit; background: transparent; border: 1px solid currentColor;
+            border-radius: .5rem; padding: .35rem .75rem; min-height: 44px; cursor: pointer;}
+    button:disabled {opacity: .45; cursor: default;}
+    """,
     js="""
     export default function ({parentElement, data, setTriggerValue}) {
         const canvas = parentElement.querySelector("canvas");
+        const undo = parentElement.querySelector("#rod-undo");
+        const reset = parentElement.querySelector("#rod-reset");
         const ctx = canvas.getContext("2d");
         const image = new Image();
+        const listeners = new AbortController();
+        const options = {signal: listeners.signal};
         let points = data.points;
+        let pending = false;
+        let gesture = null;
         canvas.width = data.width;
         canvas.height = data.height;
         canvas.style.width = Math.min(760, 620 * data.width / data.height) + "px";
+        canvas.style.cursor = points.length === 2 ? "grab" : "crosshair";
 
         function redraw() {
-            if (!image.naturalWidth) return;
+            const {width, height} = canvas.getBoundingClientRect();
+            if (!image.naturalWidth || !width || !height) return;
             ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-            const pixelPoints = points.map(([x, y]) => [x * canvas.width, y * canvas.height]);
+
+            ctx.save();
+            // Make each handle the same size on screen, regardless of video resolution.
+            ctx.scale(canvas.width / width, canvas.height / height);
+            const pixelPoints = points.map(([x, y]) => [x * width, y * height]);
             if (pixelPoints.length === 2) {
                 ctx.beginPath();
                 ctx.moveTo(...pixelPoints[0]);
                 ctx.lineTo(...pixelPoints[1]);
                 ctx.strokeStyle = "#FFDB44";
-                ctx.lineWidth = 3;
+                ctx.lineWidth = 2;
                 ctx.stroke();
             }
             pixelPoints.forEach(([x, y], index) => {
                 ctx.beginPath();
-                ctx.arc(x, y, 6, 0, 2 * Math.PI);
+                ctx.arc(x, y, 9, 0, 2 * Math.PI);
                 ctx.fillStyle = "#FFDB44";
                 ctx.fill();
                 ctx.lineWidth = 2;
                 ctx.strokeStyle = "#151515";
                 ctx.stroke();
-                ctx.font = "bold 19px sans-serif";
-                const labelX = x > canvas.width - 30 ? x - 23 : x + 9;
-                const labelY = y < 23 ? y + 22 : y - 9;
+                ctx.font = "bold 15px sans-serif";
+                const labelX = x > width - 26 ? x - 22 : x + 12;
+                const labelY = y < 20 ? y + 23 : y - 10;
                 ctx.strokeText(String(index + 1), labelX, labelY);
                 ctx.fillText(String(index + 1), labelX, labelY);
             });
+            ctx.restore();
         }
 
-        function selectPoint(event) {
-            if (!image.naturalWidth) return;
-            const box = canvas.getBoundingClientRect();
-            const clamp = value => Math.max(0, Math.min(1, value));
-            const point = [clamp((event.clientX - box.left) / box.width),
-                           clamp((event.clientY - box.top) / box.height)];
-            points = points.length === 2 ? [point] : [...points, point];
-            redraw();
-            setTriggerValue("selection", {frame: data.frame, points});
+        function send(action, nextPoints) {
+            if (pending) return;
+            pending = true;
+            undo.disabled = reset.disabled = true;
+            setTriggerValue("selection", {frame: data.frame, action, points: nextPoints});
         }
-        canvas.addEventListener("click", selectPoint);
+
+        function hitPoint(event, box) {
+            const radius = event.pointerType === "mouse" ? 14 : 22;
+            const distances = points.map(([x, y]) =>
+                Math.hypot(event.clientX - box.left - x * box.width,
+                           event.clientY - box.top - y * box.height));
+            const nearest = Math.min(...distances);
+            return nearest <= radius ? distances.indexOf(nearest) : -1;
+        }
+
+        const clamp = value => Math.max(0, Math.min(1, value));
+        canvas.addEventListener("pointerdown", event => {
+            if (!image.naturalWidth || pending || gesture || event.button !== 0) return;
+            const box = canvas.getBoundingClientRect();
+            const index = hitPoint(event, box);
+            if (index < 0 && points.length === 2) return;
+            gesture = {id: event.pointerId, index, startX: event.clientX, startY: event.clientY,
+                       initial: points, moved: false};
+            canvas.setPointerCapture(event.pointerId);
+            if (index >= 0) canvas.style.cursor = "grabbing";
+        }, options);
+
+        function movePoint(event) {
+            const box = canvas.getBoundingClientRect();
+            const dx = event.clientX - gesture.startX;
+            const dy = event.clientY - gesture.startY;
+            gesture.moved ||= Math.hypot(dx, dy) >= 3;
+            if (!gesture.moved || gesture.index < 0) return;
+            points = gesture.initial.map(([x, y], index) => index === gesture.index
+                ? [clamp(x + dx / box.width), clamp(y + dy / box.height)] : [x, y]);
+            redraw();
+        }
+
+        canvas.addEventListener("pointermove", event => {
+            if (gesture?.id === event.pointerId) movePoint(event);
+        }, options);
+
+        canvas.addEventListener("pointerup", event => {
+            if (gesture?.id !== event.pointerId) return;
+            movePoint(event);
+            const {index, initial, moved} = gesture;
+            gesture = null;
+            canvas.style.cursor = points.length === 2 ? "grab" : "crosshair";
+            if (index >= 0 && moved) {
+                if (points[index].some((value, axis) => value !== initial[index][axis])) send("set", points);
+            } else if (!moved && points.length < 2) {
+                const box = canvas.getBoundingClientRect();
+                const point = [clamp((event.clientX - box.left) / box.width),
+                               clamp((event.clientY - box.top) / box.height)];
+                if (points.length && Math.hypot((points[0][0] - point[0]) * box.width,
+                                                (points[0][1] - point[1]) * box.height) < 3) return;
+                points = [...points, point];
+                redraw();
+                send("set", points);
+            }
+        }, options);
+
+        function cancelDrag(event) {
+            if (gesture?.id !== event.pointerId) return;
+            points = gesture.initial;
+            gesture = null;
+            canvas.style.cursor = points.length === 2 ? "grab" : "crosshair";
+            redraw();
+        }
+        canvas.addEventListener("pointercancel", cancelDrag, options);
+        canvas.addEventListener("lostpointercapture", cancelDrag, options);
+        undo.disabled = !data.can_undo;
+        reset.disabled = !points.length;
+        undo.addEventListener("click", () => send("undo"), options);
+        reset.addEventListener("click", () => send("reset"), options);
+
+        const observer = new ResizeObserver(redraw);
+        observer.observe(canvas);
         image.onload = redraw;
         image.src = data.image;
         return () => {
-            canvas.removeEventListener("click", selectPoint);
+            observer.disconnect();
+            listeners.abort();
             image.onload = null;
         };
     }
@@ -2553,13 +2638,30 @@ calibration_picker = st.components.v2.component(
 )
 
 
-def store_calibration_points(picker_key: str, frame: int) -> None:
+def store_calibration_points(picker_key: str, token: str, frame: int) -> None:
+    job = st.session_state.get("job", {})
+    calibration = job.get("pelvis_calibration", {})
     event = st.session_state[picker_key].selection
-    if isinstance(event, dict) and event.get("frame") == frame:
-        points = event.get("points")
-        if isinstance(points, list) and 1 <= len(points) <= 2 and all(map(valid_point, points)):
-            st.session_state["job"]["pelvis_calibration"]["points"] = points
-            clear_outputs()
+    if (job.get("token") != token or calibration.get("frame") != frame
+            or not isinstance(event, dict) or event.get("frame") != frame):
+        return
+    current = calibration["points"]
+    history = calibration.setdefault("point_history", [])
+    action = event.get("action")
+    if action == "undo":
+        if not history:
+            return
+        calibration["points"] = history.pop()
+    else:
+        points = [] if action == "reset" else event.get("points")
+        if action not in ("set", "reset") or not isinstance(points, list):
+            return
+        if len(points) > 2 or not all(map(valid_point, points)) or points == current:
+            return
+        history.append(current)
+        del history[:-20]
+        calibration["points"] = points
+    clear_outputs()
 
 
 def store_calibration_input(field: str, key: str) -> None:
@@ -2567,6 +2669,7 @@ def store_calibration_input(field: str, key: str) -> None:
     calibration[field] = st.session_state[key]
     if field == "frame":
         calibration["points"] = []
+        calibration.pop("point_history", None)
     clear_outputs()
 
 
@@ -2608,10 +2711,11 @@ def render_pelvis_measurement(job: dict, code: str) -> None:
         help="棒はスイング中に画面に映り続ける必要はありません。",
     )
     if frame != calibration.get("frame"):
-        calibration.update(frame=frame, points=[])
+        calibration.update(frame=frame, points=[], point_history=[])
     points = calibration["points"]
-    prompts = ["映像上で棒の片端をクリックしてください。", "棒のもう片端をクリックしてください。",
-               "棒の両端を指定済みです。クリックし直すと1点目から指定できます。"]
+    prompts = ["映像上で棒の片端をクリックまたはタップしてください。",
+               "もう片方の端を指定してください。1点目はドラッグで動かせます。",
+               "黄色い点をドラッグして微調整できます。直前の操作は「元に戻す」で取り消せます。"]
     st.caption(prompts[len(points)])
     try:
         image = read_frame(job["path"], frame)
@@ -2626,8 +2730,9 @@ def render_pelvis_measurement(job: dict, code: str) -> None:
     calibration_picker(
         key=picker_key,
         data={"width": width, "height": height, "frame": frame, "points": points,
+              "can_undo": bool(calibration.get("point_history")),
               "image": "data:image/jpeg;base64," + base64.b64encode(jpg).decode("ascii")},
-        on_selection_change=lambda: store_calibration_points(picker_key, frame),
+        on_selection_change=lambda: store_calibration_points(picker_key, token, frame),
     )
     if len(points) < 2:
         return
@@ -2648,7 +2753,7 @@ def render_pelvis_measurement(job: dict, code: str) -> None:
         horizontal, vertical = pelvis_displacement_labels(job, phase, cm_per_px)
         rows.append({"P": phase, "コマ": phase_frame, "左右（cm）": horizontal, "上下（cm）": vertical})
     selected = rows[P_CODES.index(code)]
-    st.write(f"**{code}**　左右 {selected['左右（cm）']} cm　｜　上下 {selected['上下（cm）']} cm")
+    st.write(f"**{code}**　左右 {selected['左右（cm）']} cm")
     st.dataframe(rows, hide_index=True, width="stretch")
     if any(row["左右（cm）"] == "—" for row in rows):
         st.caption("「—」は腰の位置を検出できなかったコマです。")
@@ -2802,6 +2907,9 @@ def render_app():
             st.info("前回の編集データを復元できませんでした。動画を選び直してください。")
         st.info("動画を選んで「動画を読み込んで解析」を押してください。")
         return
+    if job.get("show_pelvis_overlay") and not job.get("horizontal_pelvis_output"):
+        clear_outputs()
+        job["horizontal_pelvis_output"] = True
     sportsbox_settings(job)
     # 旧版で肩の回転が描画された出力は再作成する。
     if job.pop("show_shoulder_turn", False) and job.get("camera_mode") == "front":
@@ -2902,10 +3010,10 @@ def render_app():
         st.checkbox(
             "映像の左上に腰の移動量を表示", value=job.get("show_pelvis_overlay", False),
             key=pelvis_key, on_change=store_pelvis_overlay, args=(pelvis_key,),
-            help="P1を基準に各ポジションの左右・上下の移動量をcmで表示します。",
+            help="P1を基準に各ポジションの左右の移動量をcmで表示します。",
         )
-        pelvis_lines = pelvis_overlay(job, code)
-        if job.get("show_pelvis_overlay") and pelvis_lines is None:
+        pelvis_text = pelvis_overlay(job, code)
+        if job.get("show_pelvis_overlay") and pelvis_text is None:
             st.caption("プレビュー下の「基準棒で腰の移動量を測る（cm）」で基準棒を設定してください。")
         phase_notes = job.get("phase_notes", {})
         note_positions = job.get("phase_note_positions", {})
@@ -2951,7 +3059,7 @@ def render_app():
         if "pelvis_circle" in enabled:
             pelvis_track(job)
         component=editor_component()
-        event=component(image=base64.b64encode(jpg).decode(),width=info["width"],height=info["height"],scene=f"{job['token']}:{code}:{frame_index}",phase=code,frame=frame_index,guides=job["guides"],body=body,primitives=primitives_for({**job,"shapes":[]},frame_index,cfg,code,custom_positions),shapes=job["shapes"],active_line=line,custom_visible=in_positions(frame_index,custom_positions,job["p_frames"]),sportsbox=sportsbox_overlay(job,code),pelvis_lines=pelvis_lines,note_image=note_image,note_position=note_positions.get(code, DEFAULT_PHASE_NOTE_POSITION),restore_view=st.session_state.get("restore_view"),ack=job["last_event"],key=f"editor_{job['token']}",default=None)
+        event=component(image=base64.b64encode(jpg).decode(),width=info["width"],height=info["height"],scene=f"{job['token']}:{code}:{frame_index}",phase=code,frame=frame_index,guides=job["guides"],body=body,primitives=primitives_for({**job,"shapes":[]},frame_index,cfg,code,custom_positions),shapes=job["shapes"],active_line=line,custom_visible=in_positions(frame_index,custom_positions,job["p_frames"]),sportsbox=sportsbox_overlay(job,code),pelvis_text=pelvis_text,note_image=note_image,note_position=note_positions.get(code, DEFAULT_PHASE_NOTE_POSITION),restore_view=st.session_state.get("restore_view"),ack=job["last_event"],key=f"editor_{job['token']}",default=None)
         next_phase=editor_phase_change(job,event,code,frame_index)
         if next_phase:
             st.session_state["active_p"]=next_phase
@@ -2974,7 +3082,7 @@ def render_app():
                     read_frame(job["path"],idx), primitives_for(job,idx,cfg,p,custom_positions),
                     p, sportsbox_overlay(job,p), phase_note=phase_notes.get(p, ""),
                     note_position=note_positions.get(p, DEFAULT_PHASE_NOTE_POSITION),
-                    note_style=note_styles.get(p), pelvis_lines=pelvis_overlay(job, p),
+                    note_style=note_styles.get(p), pelvis_text=pelvis_overlay(job, p),
                 )
                 col.image(cv2.cvtColor(preview,cv2.COLOR_BGR2RGB),caption=f"{p} {idx}コマ",use_container_width=True)
     st.divider();st.subheader("3. 作成して保存する")
