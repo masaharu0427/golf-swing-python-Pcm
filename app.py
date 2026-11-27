@@ -528,6 +528,33 @@ def pelvis_displacement_cm(reference, current, width: int, height: int, cm_per_p
     )
 
 
+def pelvis_displacement_labels(job: dict, code: str, cm_per_px: float) -> tuple[str, str]:
+    track = pelvis_track(job)
+    frames, info = job["p_frames"], job["info"]
+    displacement = pelvis_displacement_cm(
+        track[frames["P1"]], track[frames[code]], info["width"], info["height"], cm_per_px,
+    )
+    if displacement is None:
+        return "—", "—"
+    horizontal, vertical = (f"{value:+.1f}" if round(value, 1) else "0.0" for value in displacement)
+    return horizontal, vertical
+
+
+def pelvis_overlay(job: dict, code: str) -> tuple[str, str] | None:
+    if not job.get("show_pelvis_overlay"):
+        return None
+    calibration = job.get("pelvis_calibration", {})
+    points = calibration.get("points", [])
+    if len(points) != 2:
+        return None
+    info = job["info"]
+    length_px = rod_length_px(points, info["width"], info["height"])
+    if length_px < 30:
+        return None
+    horizontal, vertical = pelvis_displacement_labels(job, code, calibration["length_cm"] / length_px)
+    return f"腰 左右 {horizontal} cm", f"　 上下 {vertical} cm"
+
+
 def sway_circles(job: dict, frame: int, style: dict, code: str) -> list:
     guide, point, default_radius = SWAY_CIRCLE_POINTS[code]
     poses = job["poses"]
@@ -717,7 +744,8 @@ def draw_annotations(frame: np.ndarray, shapes: list, label: str | None = None,
                      sportsbox: list[list[list[tuple[str, str]]]] | None = None,
                      phase_note: str = "",
                      note_position: tuple[float, float] | list[float] = DEFAULT_PHASE_NOTE_POSITION,
-                     note_style: dict | None = None) -> np.ndarray:
+                     note_style: dict | None = None,
+                     pelvis_lines: tuple[str, str] | None = None) -> np.ndarray:
     im = Image.fromarray(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(im)
     w,h = im.size
@@ -812,6 +840,22 @@ def draw_annotations(frame: np.ndarray, shapes: list, label: str | None = None,
         x = math.floor(max(0, w - overlay.width) * note_position[0] + .5)
         y = math.floor(max(0, h - overlay.height) * note_position[1] + .5)
         im.paste(overlay, (x, y), overlay)
+    if pelvis_lines:
+        size = max(8, min(max(15, round(h * .028)), w // 17))
+        font = pil_font(size)
+        stroke = max(1, round(size * .08))
+        margin = max(6, round(size * .65))
+        pad = max(3, round(size * .25))
+        x = margin
+        y = 12 + max(22, round(36 * h / 1080)) + pad
+        values = "\n".join(pelvis_lines)
+        box = draw.multiline_textbbox((x, y), values, font=font, spacing=pad, stroke_width=stroke)
+        left, top, right, bottom = box
+        ImageDraw.Draw(im, "RGBA").rectangle(
+            (left - pad, top - pad, right + pad, bottom + pad), fill=(0, 0, 0, 166),
+        )
+        draw.multiline_text((x, y), values, fill="white", font=font, spacing=pad,
+                            stroke_width=stroke, stroke_fill="black")
     return cv2.cvtColor(np.asarray(im),cv2.COLOR_RGB2BGR)
 
 
@@ -852,7 +896,7 @@ def export_video(job: dict, cfg: dict, durations: dict[str, float], custom_posit
                 paused=draw_annotations(frame,primitives_for(job,i,cfg,code,custom_positions),
                                         code,sportsbox_overlay(job,code),phase_note=notes.get(code, ""),
                                         note_position=note_positions.get(code, DEFAULT_PHASE_NOTE_POSITION),
-                                        note_style=note_styles.get(code))
+                                        note_style=note_styles.get(code), pelvis_lines=pelvis_overlay(job, code))
                 for _ in range(hold_frames):writer.write(paused)
             if progress and i%10==0:progress((i+1)/info["frames"],f"動画を書き出し中 {i+1}/{info['frames']}")
         completed=True
@@ -916,11 +960,13 @@ def export_images(job: dict,cfg: dict,codes: list,custom_positions: list) -> dic
     with zipfile.ZipFile(zip_data, "w", zipfile.ZIP_DEFLATED) as zf:
         for k, (code, annotated) in enumerate(zip(codes, annotated_frames)):
             cropped = annotated[top:h - bottom, left:w - right]
-            if note := notes.get(code):
+            note = notes.get(code, "")
+            pelvis_lines = pelvis_overlay(job, code)
+            if note or pelvis_lines:
                 cropped = draw_annotations(
                     cropped, [], phase_note=note,
                     note_position=note_positions.get(code, DEFAULT_PHASE_NOTE_POSITION),
-                    note_style=note_styles.get(code),
+                    note_style=note_styles.get(code), pelvis_lines=pelvis_lines,
                 )
             ok, png = cv2.imencode(".png", cropped)
             if not ok:
@@ -1017,7 +1063,8 @@ def editor_phase_change(job: dict,event,phase: str,frame: int) -> str | None:
 EDITOR_HTML = r"""
 <!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 *{box-sizing:border-box}body{margin:0;font-family:Arial,"Yu Gothic",Meiryo,sans-serif;color:#173831}#root{padding:0 1px 8px}html,body{overscroll-behavior:none}canvas{-webkit-touch-callout:none;user-select:none}.toolbar{margin-top:6px;display:flex;gap:5px;align-items:center;flex-wrap:wrap;padding:8px;background:#edf2ec;border:1px solid #d8e0d5;border-radius:7px}button,select,input{font:inherit}button{min-height:36px;border:1px solid #b7c7b1;border-radius:5px;background:#fff;color:#173831;padding:6px 10px;cursor:pointer;font-size:12px}button.active{background:#1c4c40;color:white;border-color:#1c4c40}.toolbar label{font-size:11px;display:flex;align-items:center;gap:3px}.toolbar input[type=color]{width:29px;height:31px;padding:0;border:0;background:none}.toolbar select{height:31px;border:1px solid #b7c7b1;border-radius:4px;background:white;font-size:11px}.canvas-wrap{position:relative;display:inline-flex;max-width:100%}.phase-overlay{position:absolute;top:8px;left:8px;z-index:2;padding:3px;background:rgba(255,255,255,.9);border:1px solid #a9bbaa;border-radius:7px;box-shadow:0 1px 6px #0002}.phase-overlay select{font-size:16px;font-weight:bold;min-height:42px;min-width:84px;padding:6px 10px;background:transparent;border:0;border-radius:4px;color:#173831}.view{margin-top:0;background:#e9ede6;border:1px solid #cbd5c6;border-radius:7px;display:flex;justify-content:center;align-items:center;overflow:hidden}canvas{display:block;max-width:100%;max-height:620px;width:auto;height:auto;touch-action:none;cursor:grab}.hint{font-size:11px;line-height:1.8;color:#65755e;margin:7px 2px 0}#saved{font-size:11px;min-height:20px;margin:5px 2px 0;color:#36734a}button:focus-visible{outline:3px solid #c8dc8e}@media(max-width:600px){.toolbar{padding:6px;gap:4px}button{font-size:11px;min-height:38px;padding:5px 8px}canvas{max-height:560px}}
-</style></head><body><div id="root"><div class="view"><div class="canvas-wrap"><canvas id="canvas" width="720" height="960" aria-label="管理線を直接ドラッグするプレビュー"></canvas><div class="phase-overlay"><select id="phaseSelect" aria-label="ポジション"><option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option><option value="P4">P4</option><option value="P5">P5</option><option value="P6">P6</option><option value="P7">P7</option><option value="P8">P8</option><option value="P9">P9</option><option value="P10">P10</option></select></div></div></div><div class="toolbar"><button data-tool="move" class="active">✥ 線を動かす</button><button data-tool="line">╱ 直線</button><button data-tool="arrow">→ 矢印線</button><button data-tool="angle">∠ 角度線</button><button data-tool="circle">○ 円</button><button data-tool="free">〰 手描き</button><input id="color" type="color" value="#ffff00" aria-label="手描きの色"><select id="width" aria-label="手描きの太さ"><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option></select><select id="dash" aria-label="手描きの線種"><option value="solid">実線</option><option value="dashed">点線</option></select><label><input id="angle" type="checkbox" checked>角度</label><label><input id="bind" type="checkbox" checked>このPのみ</label><button id="undo">↶ 戻す</button><button id="clear">描画を消去</button></div><p class="hint">丸をドラッグすると位置・角度を調整できます　シャフトとヒップは線そのものも動かせます<br>直線・矢印線・円・手描きは映像上をドラッグして追加します<br><span id="angleHint" hidden></span></p><div id="saved" role="status">動画と管理線を準備しています…</div></div><script>
+.pelvis-overlay{position:absolute;top:calc(100% + 4px);left:0;padding:4px 6px;background:rgba(0,0,0,.65);border-radius:4px;color:#fff;font-size:clamp(12px,2.7vw,16px);font-weight:bold;line-height:1.4;white-space:pre;pointer-events:none}
+</style></head><body><div id="root"><div class="view"><div class="canvas-wrap"><canvas id="canvas" width="720" height="960" aria-label="管理線を直接ドラッグするプレビュー"></canvas><div class="phase-overlay"><select id="phaseSelect" aria-label="ポジション"><option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option><option value="P4">P4</option><option value="P5">P5</option><option value="P6">P6</option><option value="P7">P7</option><option value="P8">P8</option><option value="P9">P9</option><option value="P10">P10</option></select><div class="pelvis-overlay" id="pelvisOverlay" hidden></div></div></div></div><div class="toolbar"><button data-tool="move" class="active">✥ 線を動かす</button><button data-tool="line">╱ 直線</button><button data-tool="arrow">→ 矢印線</button><button data-tool="angle">∠ 角度線</button><button data-tool="circle">○ 円</button><button data-tool="free">〰 手描き</button><input id="color" type="color" value="#ffff00" aria-label="手描きの色"><select id="width" aria-label="手描きの太さ"><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option></select><select id="dash" aria-label="手描きの線種"><option value="solid">実線</option><option value="dashed">点線</option></select><label><input id="angle" type="checkbox" checked>角度</label><label><input id="bind" type="checkbox" checked>このPのみ</label><button id="undo">↶ 戻す</button><button id="clear">描画を消去</button></div><p class="hint">丸をドラッグすると位置・角度を調整できます　シャフトとヒップは線そのものも動かせます<br>直線・矢印線・円・手描きは映像上をドラッグして追加します<br><span id="angleHint" hidden></span></p><div id="saved" role="status">動画と管理線を準備しています…</div></div><script>
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d');let args=null,scene=null,g=null,body=null,shapes=[],tool='move',drag=null,active=null,history=[],lastEvent=null,lastHeight=0;const img=new Image();const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v)),clone=x=>JSON.parse(JSON.stringify(x));let changedG=false,changedB=false,changedS=false,angleDraft=null;
 const noteImage=new Image();
 let notePosition=null,changedNote=false;
@@ -1316,7 +1363,11 @@ function returnToEditor(id){
         window.frameElement.scrollIntoView({block:'start'});
     });
 }
-img.onload=()=>{render();height();};noteImage.onload=render;window.addEventListener('message',e=>{if(e.source!==window.parent||e.data.type!=='streamlit:render')return;args=e.data.args;$('phaseSelect').value=args.phase;$('phaseSelect').disabled=!!(lastEvent&&args.ack!==lastEvent);returnToEditor(args.restore_view);const newScene=args.scene!==scene;scene=args.scene;g=clone(args.guides);body=clone(args.body);shapes=clone(args.shapes);notePosition=args.note_position;
+img.onload=()=>{render();height();};noteImage.onload=render;window.addEventListener('message',e=>{if(e.source!==window.parent||e.data.type!=='streamlit:render')return;args=e.data.args;
+const pelvis=$('pelvisOverlay');
+pelvis.hidden=!args.pelvis_lines;
+pelvis.textContent=(args.pelvis_lines||[]).join('\n');
+$('phaseSelect').value=args.phase;$('phaseSelect').disabled=!!(lastEvent&&args.ack!==lastEvent);returnToEditor(args.restore_view);const newScene=args.scene!==scene;scene=args.scene;g=clone(args.guides);body=clone(args.body);shapes=clone(args.shapes);notePosition=args.note_position;
 if(args.note_image){
     const noteSrc='data:image/png;base64,'+args.note_image;
     if(noteImage.src!==noteSrc)noteImage.src=noteSrc;
@@ -2508,11 +2559,25 @@ def store_calibration_points(picker_key: str, frame: int) -> None:
         points = event.get("points")
         if isinstance(points, list) and 1 <= len(points) <= 2 and all(map(valid_point, points)):
             st.session_state["job"]["pelvis_calibration"]["points"] = points
+            clear_outputs()
+
+
+def store_calibration_input(field: str, key: str) -> None:
+    calibration = st.session_state["job"]["pelvis_calibration"]
+    calibration[field] = st.session_state[key]
+    if field == "frame":
+        calibration["points"] = []
+    clear_outputs()
 
 
 def store_calibration_visibility(key: str) -> None:
     calibration = st.session_state["job"].setdefault("pelvis_calibration", {})
     calibration["visible"] = st.session_state[key]
+
+
+def store_pelvis_overlay(key: str) -> None:
+    st.session_state["job"]["show_pelvis_overlay"] = st.session_state[key]
+    clear_outputs()
 
 
 def render_pelvis_measurement(job: dict, code: str) -> None:
@@ -2530,13 +2595,16 @@ def render_pelvis_measurement(job: dict, code: str) -> None:
     calibration = job.setdefault("pelvis_calibration", {})
     st.caption("カメラを固定し、腰と同じ奥行きに基準棒を置いて撮影します。棒はカメラの奥行き方向へ傾けず、両端を映してください。")
     length_col, frame_col = st.columns(2)
+    length_key, frame_key = f"rod_length_{token}", f"rod_frame_{token}"
     calibration["length_cm"] = length_col.number_input(
         "基準棒の実際の長さ（cm）", min_value=0.1, value=calibration.get("length_cm", 100.0),
-        step=1.0, format="%.1f", key=f"rod_length_{token}",
+        step=1.0, format="%.1f", key=length_key,
+        on_change=store_calibration_input, args=("length_cm", length_key),
     )
     frame = frame_col.number_input(
         "棒の両端が見えるコマ", min_value=0, max_value=info["frames"] - 1,
-        value=calibration.get("frame", p1_frame), step=1, key=f"rod_frame_{token}",
+        value=calibration.get("frame", p1_frame), step=1, key=frame_key,
+        on_change=store_calibration_input, args=("frame", frame_key),
         help="棒はスイング中に画面に映り続ける必要はありません。",
     )
     if frame != calibration.get("frame"):
@@ -2577,10 +2645,7 @@ def render_pelvis_measurement(job: dict, code: str) -> None:
     rows = []
     for phase in P_CODES:
         phase_frame = job["p_frames"][phase]
-        displacement = pelvis_displacement_cm(track[p1_frame], track[phase_frame], width, height, cm_per_px)
-        horizontal, vertical = ("—", "—") if displacement is None else (
-            f"{value:+.1f}" if round(value, 1) else "0.0" for value in displacement
-        )
+        horizontal, vertical = pelvis_displacement_labels(job, phase, cm_per_px)
         rows.append({"P": phase, "コマ": phase_frame, "左右（cm）": horizontal, "上下（cm）": vertical})
     selected = rows[P_CODES.index(code)]
     st.write(f"**{code}**　左右 {selected['左右（cm）']} cm　｜　上下 {selected['上下（cm）']} cm")
@@ -2833,6 +2898,15 @@ def render_app():
     .st-key-compact_preview [data-testid="stSlider"] {padding-top: 0; padding-bottom: 0;}
     </style>""",unsafe_allow_html=True)
     with st.container(key="compact_preview"):
+        pelvis_key = f"show_pelvis_overlay_{job['token']}"
+        st.checkbox(
+            "映像の左上に腰の移動量を表示", value=job.get("show_pelvis_overlay", False),
+            key=pelvis_key, on_change=store_pelvis_overlay, args=(pelvis_key,),
+            help="P1を基準に各ポジションの左右・上下の移動量をcmで表示します。",
+        )
+        pelvis_lines = pelvis_overlay(job, code)
+        if job.get("show_pelvis_overlay") and pelvis_lines is None:
+            st.caption("プレビュー下の「基準棒で腰の移動量を測る（cm）」で基準棒を設定してください。")
         phase_notes = job.get("phase_notes", {})
         note_positions = job.get("phase_note_positions", {})
         note_styles = job.get("phase_note_styles", {})
@@ -2877,7 +2951,7 @@ def render_app():
         if "pelvis_circle" in enabled:
             pelvis_track(job)
         component=editor_component()
-        event=component(image=base64.b64encode(jpg).decode(),width=info["width"],height=info["height"],scene=f"{job['token']}:{code}:{frame_index}",phase=code,frame=frame_index,guides=job["guides"],body=body,primitives=primitives_for({**job,"shapes":[]},frame_index,cfg,code,custom_positions),shapes=job["shapes"],active_line=line,custom_visible=in_positions(frame_index,custom_positions,job["p_frames"]),sportsbox=sportsbox_overlay(job,code),note_image=note_image,note_position=note_positions.get(code, DEFAULT_PHASE_NOTE_POSITION),restore_view=st.session_state.get("restore_view"),ack=job["last_event"],key=f"editor_{job['token']}",default=None)
+        event=component(image=base64.b64encode(jpg).decode(),width=info["width"],height=info["height"],scene=f"{job['token']}:{code}:{frame_index}",phase=code,frame=frame_index,guides=job["guides"],body=body,primitives=primitives_for({**job,"shapes":[]},frame_index,cfg,code,custom_positions),shapes=job["shapes"],active_line=line,custom_visible=in_positions(frame_index,custom_positions,job["p_frames"]),sportsbox=sportsbox_overlay(job,code),pelvis_lines=pelvis_lines,note_image=note_image,note_position=note_positions.get(code, DEFAULT_PHASE_NOTE_POSITION),restore_view=st.session_state.get("restore_view"),ack=job["last_event"],key=f"editor_{job['token']}",default=None)
         next_phase=editor_phase_change(job,event,code,frame_index)
         if next_phase:
             st.session_state["active_p"]=next_phase
@@ -2900,7 +2974,7 @@ def render_app():
                     read_frame(job["path"],idx), primitives_for(job,idx,cfg,p,custom_positions),
                     p, sportsbox_overlay(job,p), phase_note=phase_notes.get(p, ""),
                     note_position=note_positions.get(p, DEFAULT_PHASE_NOTE_POSITION),
-                    note_style=note_styles.get(p),
+                    note_style=note_styles.get(p), pelvis_lines=pelvis_overlay(job, p),
                 )
                 col.image(cv2.cvtColor(preview,cv2.COLOR_BGR2RGB),caption=f"{p} {idx}コマ",use_container_width=True)
     st.divider();st.subheader("3. 作成して保存する")
