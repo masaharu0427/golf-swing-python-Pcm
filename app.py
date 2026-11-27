@@ -39,7 +39,7 @@ COLORS = {"head":"#43D9E6", "spine":"#FFFF00", "tilt":"#FFA500", "shoulders":"#0
 LINE_NAMES["right_leg_outer"] = "右脚の外側（P1基準線）"
 COLORS["right_leg_outer"] = "#1BC4D4"
 REAR_ONLY_LINES = ("back_vertical", "hip_right_knee")
-LINE_NAMES["pelvis_circle"] = "骨盤中心の左右・上下の動き（円）"
+LINE_NAMES["pelvis_circle"] = "骨盤中心の動き"
 COLORS["pelvis_circle"] = "#FF9500"
 LINE_NAMES["right_knee_circle"] = "右ひざの左右・上下の動き（円）"
 COLORS["right_knee_circle"] = "#FFFFFF"
@@ -53,7 +53,8 @@ THIN_DEFAULT_LINES = {"head", "ankles", "hip", "vertical", "shaft", *SWAY_CIRCLE
 DEFAULT_TARGET_SIDE = "右"
 FRONT_ONLY_LINES = ("right_leg_outer", "right_knee_circle", "left_knee_circle")
 DEFAULT_LINES = ["head", "spine", "shoulders", "shaft", "hip", *REAR_ONLY_LINES, "pelvis_circle"]
-FRONT_DEFAULT_LINES = ["head", "tilt", "shoulders", "ankles", "right_leg_outer", *SWAY_CIRCLE_POINTS]
+FRONT_DEFAULT_LINES = ["tilt", "shoulders", "ankles", "pelvis_circle"]
+SHOULDER_POSITIONS = {"front": ["P1", "P7"], "back": ["P4", "P8", "P9"]}
 RIGHT_LEG_POINTS = ("right_ankle_outer", "right_thigh_outer")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
 
@@ -589,9 +590,16 @@ def primitives_for(job: dict, frame: int, cfg: dict, phase: str | None = None, c
     front = job.get("camera_mode") == "front"
     hidden_lines = REAR_ONLY_LINES if front else FRONT_ONLY_LINES
     for code,s in cfg.items():
-        if not s["enabled"] or (code not in ("right_leg_outer", "hip_right_knee") and not in_positions(frame,s["positions"],job["p_frames"])):
+        if not s["enabled"] or code in hidden_lines:
             continue
-        if code in hidden_lines:
+        if code == "shoulders":
+            positions = SHOULDER_POSITIONS["front" if front else "back"]
+            if phase is None:
+                if not in_positions(frame, positions, job["p_frames"]):
+                    continue
+            elif phase not in positions or job["p_frames"].get(phase) != frame:
+                continue
+        elif code not in ("right_leg_outer", "hip_right_knee") and not in_positions(frame, s["positions"], job["p_frames"]):
             continue
         if code == "head" and g.get("head"):
             out.append({**s,"type":"circle","id":"head_reference","center":g["head"][:],"radius":g["radius"],"dash":"dashed"})
@@ -2685,12 +2693,20 @@ def store_pelvis_overlay(key: str) -> None:
 
 def render_pelvis_measurement(job: dict, code: str) -> None:
     token = job["token"]
+    pelvis_key = f"show_pelvis_overlay_{token}"
+    show_overlay = st.checkbox(
+        "映像の左上に腰の移動量を表示", value=job.get("show_pelvis_overlay", False),
+        key=pelvis_key, on_change=store_pelvis_overlay, args=(pelvis_key,),
+        help="P1を基準に各ポジションの左右の移動量をcmで表示します。",
+    )
     checkbox_key = f"measure_pelvis_{token}"
     calibration = job.get("pelvis_calibration", {})
     if not st.checkbox(
         "基準棒で腰の移動量を測る（cm）", value=calibration.get("visible", False),
         key=checkbox_key, on_change=store_calibration_visibility, args=(checkbox_key,),
     ):
+        if show_overlay and pelvis_overlay(job, code) is None:
+            st.caption("腰の移動量を表示するには、上の項目を開いて基準棒を設定してください。")
         return
     info = job["info"]
     width, height = info["width"], info["height"]
@@ -2763,6 +2779,18 @@ def main():
     st.set_page_config(page_title="ゴルフスイング分析・簡単操作版",page_icon="🏌️",layout="wide",initial_sidebar_state="expanded")
     st.markdown("""<style>
     html, body, [data-testid="stMain"] {overscroll-behavior: none;}
+    .st-key-line_visibility_front [data-baseweb="tag"],
+    .st-key-line_visibility_back [data-baseweb="tag"],
+    .st-key-active_line [data-baseweb="select"] > div {
+        background-color: #18543B !important;
+        color: #FFFFFF !important;
+    }
+    .st-key-line_visibility_front [data-baseweb="tag"] span,
+    .st-key-line_visibility_back [data-baseweb="tag"] span,
+    .st-key-active_line [data-baseweb="select"] input,
+    .st-key-active_line [data-baseweb="select"] svg {
+        color: #FFFFFF !important;
+    }
     @media (pointer: fine) {
         html, [data-testid="stMain"] {
             scrollbar-width: auto;
@@ -2813,16 +2841,6 @@ def render_app():
     if styles and "back_vertical" not in styles and rear_mode:
         current_lines = st.session_state["enabled_lines"]
         st.session_state["enabled_lines"] = list(dict.fromkeys([*current_lines, *REAR_ONLY_LINES]))
-    if styles and "right_leg_outer" not in styles and not rear_mode:
-        current_lines = st.session_state["enabled_lines"]
-        st.session_state["enabled_lines"] = list(dict.fromkeys([*current_lines, "right_leg_outer", *SWAY_CIRCLE_POINTS]))
-    if styles and "pelvis_circle" not in styles and not rear_mode:
-        current_lines = st.session_state["enabled_lines"]
-        st.session_state["enabled_lines"] = list(dict.fromkeys([*current_lines, "pelvis_circle"]))
-    if styles and "left_knee_circle" not in styles and not rear_mode:
-        current_lines = st.session_state["enabled_lines"]
-        st.session_state["enabled_lines"] = list(dict.fromkeys([*current_lines, "left_knee_circle"]))
-        st.session_state.pop("line_visibility_front", None)
     for key, color in COLORS.items():
         styles.setdefault(key, {"color":color, "width":2 if key in THIN_DEFAULT_LINES else 3, "dash":"dashed" if key in ("hip", "back_vertical") else "solid", "positions":[]})
     if not st.session_state.get("back_vertical_dash_initialized"):
@@ -2914,6 +2932,9 @@ def render_app():
     # 旧版で肩の回転が描画された出力は再作成する。
     if job.pop("show_shoulder_turn", False) and job.get("camera_mode") == "front":
         clear_outputs()
+    if not job.get("fixed_shoulder_positions"):
+        clear_outputs()
+        job["fixed_shoulder_positions"] = True
     job["camera_mode"] = st.session_state["camera_mode"]
     if not job.get("pelvis_vertical_tracking"):
         if "pelvis_circle" in enabled:
@@ -2994,9 +3015,6 @@ def render_app():
             style["dash"]=st.selectbox("種類",["solid","dashed"],index=["solid","dashed"].index(style["dash"]),format_func=lambda x:"実線" if x=="solid" else "点線",key=f"dash_{line}",on_change=clear_outputs)
         if line not in ("shoulders", "right_leg_outer", "hip_right_knee"):
             style["positions"]=st.multiselect("この線を表示するポジション（複数選択可）",P_CODES,default=style["positions"],key=f"positions_{line}",help="未選択なら全フレームに表示します。",on_change=clear_outputs)
-    if "shoulders" in enabled:
-        shoulder_style=st.session_state["styles"]["shoulders"]
-        shoulder_style["positions"]=st.multiselect("両肩ラインを表示するP（複数選択）",P_CODES,default=shoulder_style["positions"],key="positions_shoulders",help="未選択なら全フレーム。選んだ場合は、そのPに設定したコマだけに表示します。",on_change=clear_outputs)
     cfg={key:{**copy.deepcopy(value),"enabled":key in enabled} for key,value in st.session_state["styles"].items()}
     widget=f"frame_{job['token']}_{code}"
     if widget not in st.session_state:st.session_state[widget]=job["p_frames"][code]
@@ -3006,15 +3024,7 @@ def render_app():
     .st-key-compact_preview [data-testid="stSlider"] {padding-top: 0; padding-bottom: 0;}
     </style>""",unsafe_allow_html=True)
     with st.container(key="compact_preview"):
-        pelvis_key = f"show_pelvis_overlay_{job['token']}"
-        st.checkbox(
-            "映像の左上に腰の移動量を表示", value=job.get("show_pelvis_overlay", False),
-            key=pelvis_key, on_change=store_pelvis_overlay, args=(pelvis_key,),
-            help="P1を基準に各ポジションの左右の移動量をcmで表示します。",
-        )
         pelvis_text = pelvis_overlay(job, code)
-        if job.get("show_pelvis_overlay") and pelvis_text is None:
-            st.caption("プレビュー下の「基準棒で腰の移動量を測る（cm）」で基準棒を設定してください。")
         phase_notes = job.get("phase_notes", {})
         note_positions = job.get("phase_note_positions", {})
         note_styles = job.get("phase_note_styles", {})
