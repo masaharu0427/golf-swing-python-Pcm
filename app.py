@@ -23,6 +23,7 @@ import zipfile
 import cv2
 import imageio_ffmpeg
 import numpy as np
+import pandas as pd
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import streamlit as st
 from streamlit.components.v1 import declare_component
@@ -55,6 +56,18 @@ FRONT_ONLY_LINES = ("right_leg_outer", "right_knee_circle", "left_knee_circle")
 DEFAULT_LINES = ["head", "spine", "shoulders", "shaft", "hip", *REAR_ONLY_LINES, "pelvis_circle"]
 FRONT_DEFAULT_LINES = ["tilt", "shoulders", "ankles", "pelvis_circle"]
 SHOULDER_POSITIONS = {"front": ["P1", "P7"], "back": ["P4", "P8", "P9"]}
+PELVIS_IRON_RANGES = {
+    "male": {
+        "P2": (-3.3, 0.3), "P3": (-4.3, 0.3), "P4": (-2.5, 2.5),
+        "P5": (3.3, 8.4), "P6": (7.6, 12.7), "P7": (9.4, 15.0),
+        "P8": (10.9, 16.5),
+    },
+    "female": {
+        "P2": (-3.0, 0.5), "P3": (-3.8, 0.8), "P4": (-2.3, 1.3),
+        "P5": (2.0, 6.6), "P6": (5.8, 10.4), "P7": (6.9, 11.9),
+        "P8": (7.6, 12.7),
+    },
+}
 RIGHT_LEG_POINTS = ("right_ankle_outer", "right_thigh_outer")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
 
@@ -535,7 +548,13 @@ def pelvis_displacement_labels(job: dict, code: str, cm_per_px: float) -> tuple[
     return horizontal_label, vertical_label
 
 
-def pelvis_overlay(job: dict, code: str) -> str | None:
+def pelvis_value_color(job: dict, code: str, horizontal: str) -> str:
+    profile = job.get("pelvis_iron_profile", job.get("sportsbox_iron_profile", "male"))
+    bounds = PELVIS_IRON_RANGES.get(profile, PELVIS_IRON_RANGES["male"]).get(code)
+    return range_value_color(float(horizontal), bounds) if bounds and horizontal != "—" else "white"
+
+
+def pelvis_overlay(job: dict, code: str) -> list[tuple[str, str]] | None:
     if not job.get("show_pelvis_overlay"):
         return None
     calibration = job.get("pelvis_calibration", {})
@@ -547,7 +566,7 @@ def pelvis_overlay(job: dict, code: str) -> str | None:
     if length_px < 30:
         return None
     horizontal, _ = pelvis_displacement_labels(job, code, calibration["length_cm"] / length_px)
-    return f"腰 左右 {horizontal} cm"
+    return [("腰 左右 ", "white"), (horizontal, pelvis_value_color(job, code, horizontal)), (" cm", "white")]
 
 
 def sway_circles(job: dict, frame: int, style: dict, code: str) -> list:
@@ -661,7 +680,7 @@ def pil_font(size: int):
     return ImageFont.load_default(size=size)
 
 
-def sportsbox_value_color(value: float, bounds: tuple[float, float]) -> str:
+def range_value_color(value: float, bounds: tuple[float, float]) -> str:
     low, high = bounds
     return "#11E30D" if low <= value <= high else "#F41A1A"
 
@@ -676,7 +695,7 @@ def sportsbox_overlay(job: dict, phase: str) -> list[list[list[tuple[str, str]]]
         turn_line = [("回転角度", "white")]
         for metric, name in SPORTSBOX_METRICS.items():
             value = angles[metric]
-            color = sportsbox_value_color(value, turn_ranges[metric]) if turn_ranges else "white"
+            color = range_value_color(value, turn_ranges[metric]) if turn_ranges else "white"
             turn_line.extend([(f"   {name} ", "white"), (f"{value}°", color)])
         panels.append([turn_line])
     if not job.get("sportsbox_show_sway", True):
@@ -691,7 +710,7 @@ def sportsbox_overlay(job: dict, phase: str) -> list[list[list[tuple[str, str]]]
         value = sway.get(code, {}).get("pelvis")
         if value is not None:
             number = f"{value:.2f}".rstrip("0").rstrip(".") + "″"
-            lines.append([(f"{label}   骨盤 ", "white"), (number, sportsbox_value_color(value, ranges["sway"][code]))])
+            lines.append([(f"{label}   骨盤 ", "white"), (number, range_value_color(value, ranges["sway"][code]))])
     if lines:
         panels.append(lines)
     return panels
@@ -747,7 +766,7 @@ def draw_annotations(frame: np.ndarray, shapes: list, label: str | None = None,
                      phase_note: str = "",
                      note_position: tuple[float, float] | list[float] = DEFAULT_PHASE_NOTE_POSITION,
                      note_style: dict | None = None,
-                     pelvis_text: str | None = None) -> np.ndarray:
+                     pelvis_text: list[tuple[str, str]] | None = None) -> np.ndarray:
     im = Image.fromarray(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(im)
     w,h = im.size
@@ -850,11 +869,14 @@ def draw_annotations(frame: np.ndarray, shapes: list, label: str | None = None,
         pad = max(3, round(size * .25))
         x = margin
         y = 12 + max(22, round(36 * h / 1080)) + pad
-        left, top, right, bottom = draw.textbbox((x, y), pelvis_text, font=font, stroke_width=stroke)
+        text = "".join(part for part, _ in pelvis_text)
+        left, top, right, bottom = draw.textbbox((x, y), text, font=font, stroke_width=stroke)
         ImageDraw.Draw(im, "RGBA").rectangle(
             (left - pad, top - pad, right + pad, bottom + pad), fill=(0, 0, 0, 166),
         )
-        draw.text((x, y), pelvis_text, fill="white", font=font, stroke_width=stroke, stroke_fill="black")
+        for part, color in pelvis_text:
+            draw.text((x, y), part, fill=color, font=font, stroke_width=stroke, stroke_fill="black")
+            x += draw.textlength(part, font=font)
     return cv2.cvtColor(np.asarray(im),cv2.COLOR_RGB2BGR)
 
 
@@ -1365,7 +1387,12 @@ function returnToEditor(id){
 img.onload=()=>{render();height();};noteImage.onload=render;window.addEventListener('message',e=>{if(e.source!==window.parent||e.data.type!=='streamlit:render')return;args=e.data.args;
 const pelvis=$('pelvisOverlay');
 pelvis.hidden=!args.pelvis_text;
-pelvis.textContent=args.pelvis_text||'';
+pelvis.replaceChildren(...(args.pelvis_text || []).map(([text, color])=>{
+    const span=document.createElement('span');
+    span.textContent=text;
+    span.style.color=color;
+    return span;
+}));
 $('phaseSelect').value=args.phase;$('phaseSelect').disabled=!!(lastEvent&&args.ack!==lastEvent);returnToEditor(args.restore_view);const newScene=args.scene!==scene;scene=args.scene;g=clone(args.guides);body=clone(args.body);shapes=clone(args.shapes);notePosition=args.note_position;
 if(args.note_image){
     const noteSrc='data:image/png;base64,'+args.note_image;
@@ -2691,6 +2718,11 @@ def store_pelvis_overlay(key: str) -> None:
     clear_outputs()
 
 
+def store_pelvis_iron_profile(key: str) -> None:
+    st.session_state["job"]["pelvis_iron_profile"] = st.session_state[key]
+    clear_outputs()
+
+
 def render_pelvis_measurement(job: dict, code: str) -> None:
     token = job["token"]
     pelvis_key = f"show_pelvis_overlay_{token}"
@@ -2701,10 +2733,19 @@ def render_pelvis_measurement(job: dict, code: str) -> None:
     )
     checkbox_key = f"measure_pelvis_{token}"
     calibration = job.get("pelvis_calibration", {})
-    if not st.checkbox(
+    measure = st.checkbox(
         "基準棒で腰の移動量を測る（cm）", value=calibration.get("visible", False),
         key=checkbox_key, on_change=store_calibration_visibility, args=(checkbox_key,),
-    ):
+    )
+    if show_overlay or measure:
+        profile_key = f"pelvis_iron_profile_{token}"
+        profile = job.setdefault("pelvis_iron_profile", job.get("sportsbox_iron_profile", "male"))
+        st.radio(
+            "腰の左右移動量の判定基準", tuple(PELVIS_IRON_RANGES),
+            index=list(PELVIS_IRON_RANGES).index(profile), format_func=SPORTSBOX_IRON_LABELS.__getitem__,
+            key=profile_key, horizontal=True, on_change=store_pelvis_iron_profile, args=(profile_key,),
+        )
+    if not measure:
         if show_overlay and pelvis_overlay(job, code) is None:
             st.caption("腰の移動量を表示するには、上の項目を開いて基準棒を設定してください。")
         return
@@ -2768,9 +2809,22 @@ def render_pelvis_measurement(job: dict, code: str) -> None:
         phase_frame = job["p_frames"][phase]
         horizontal, vertical = pelvis_displacement_labels(job, phase, cm_per_px)
         rows.append({"P": phase, "コマ": phase_frame, "左右（cm）": horizontal, "上下（cm）": vertical})
-    selected = rows[P_CODES.index(code)]
-    st.write(f"**{code}**　左右 {selected['左右（cm）']} cm")
-    st.dataframe(rows, hide_index=True, width="stretch")
+    horizontal_column = "左右（cm）"
+    colors = [pelvis_value_color(job, row["P"], row[horizontal_column]) for row in rows]
+    selected_index = P_CODES.index(code)
+    horizontal = rows[selected_index][horizontal_column]
+    selected_color = colors[selected_index]
+    if selected_color == "white":
+        st.write(f"**{code}**　左右 {horizontal} cm")
+    else:
+        st.markdown(
+            f'**{code}**　左右 <span style="color:{selected_color};background-color:#202820;'
+            f'padding:0.1rem 0.25rem;border-radius:0.2rem">{horizontal}</span> cm',
+            unsafe_allow_html=True,
+        )
+    styles = [f"color:{color};background-color:#202820" if color != "white" else "" for color in colors]
+    table = pd.DataFrame(rows).style.apply(lambda column: styles, subset=[horizontal_column])
+    st.dataframe(table, hide_index=True, width="stretch")
     if any(row["左右（cm）"] == "—" for row in rows):
         st.caption("「—」は腰の位置を検出できなかったコマです。")
 
@@ -2925,9 +2979,10 @@ def render_app():
             st.info("前回の編集データを復元できませんでした。動画を選び直してください。")
         st.info("動画を選んで「動画を読み込んで解析」を押してください。")
         return
-    if job.get("show_pelvis_overlay") and not job.get("horizontal_pelvis_output"):
-        clear_outputs()
-        job["horizontal_pelvis_output"] = True
+    if not job.get("colored_pelvis_output"):
+        if job.get("show_pelvis_overlay"):
+            clear_outputs()
+        job["colored_pelvis_output"] = True
     sportsbox_settings(job)
     # 旧版で肩の回転が描画された出力は再作成する。
     if job.pop("show_shoulder_turn", False) and job.get("camera_mode") == "front":
