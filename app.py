@@ -1096,7 +1096,7 @@ function message(type,extra={}){window.parent.postMessage({isStreamlitMessage:tr
 function height(){const h=Math.ceil($('root').getBoundingClientRect().height)+8;if(h!==lastHeight){lastHeight=h;message('streamlit:setFrameHeight',{height:h});}}
 function visible(s){return s.target_p?s.target_p===args.phase:args.custom_visible!==false;}
 function style(s){ctx.strokeStyle=s.color||'#ffff00';ctx.lineWidth=Math.max(1,(s.width||3)*canvas.height/1080);ctx.lineCap=s.dash==='dashed'?'butt':'round';ctx.lineJoin='round';const dash=Math.max(2,4*canvas.height/1080);ctx.setLineDash(s.dash==='dashed'?[dash,dash]:[]);}
-function text(label,p,color,angle=false){ctx.save();ctx.font=`bold ${angle?Math.max(14,canvas.height*26/1080):Math.max(18,canvas.height*.03)}px sans-serif`;ctx.lineWidth=angle?2:3;ctx.strokeStyle='#101c17';ctx.fillStyle=color;ctx.setLineDash([]);const x=clamp(p[0],0,.88)*canvas.width,y=clamp(p[1],.03,.97)*canvas.height;ctx.strokeText(label,x,y);ctx.fillText(label,x,y);ctx.restore();}
+function angleText(label,p,color){ctx.save();ctx.font=`bold ${Math.max(14,canvas.height*26/1080)}px sans-serif`;ctx.lineWidth=2;ctx.strokeStyle='#101c17';ctx.fillStyle=color;ctx.setLineDash([]);const x=clamp(p[0],0,.88)*canvas.width,y=clamp(p[1],.03,.97)*canvas.height;ctx.strokeText(label,x,y);ctx.fillText(label,x,y);ctx.restore();}
 function geometry(item){const s=clone(item);if(s.id==='shaft'){const[a,b]=g.shaft;s.a=a;s.b=[a[0]+(b[0]-a[0])*2.2,a[1]+(b[1]-a[1])*2.2];s.label_pos=[a[0]+(b[0]-a[0])*.45+.014,a[1]+(b[1]-a[1])*.45+.015];}if(s.id==='hip'){s.a=[g.hip,g.top];s.b=[g.hip,g.bottom];}if(s.id==='vertical'){s.a=[g.vertical,g.top];s.b=[g.vertical,g.bottom];}if(s.id==='back_vertical'){s.a[0]=s.b[0]=g.back_vertical;}if(s.id==='ankles'){s.a=[g.ankles[s.part],g.top];s.b=[g.ankles[s.part],g.bottom];}if(s.sway_guide){
     const p=g[s.sway_guide+'_center']||s.anchor;
     s.center=[p[0]+s.offset[0],p[1]+s.offset[1]];
@@ -1140,9 +1140,9 @@ function draw(s){
         s.points.forEach((p,i)=>i?ctx.lineTo(...point(p)):ctx.moveTo(...point(p)));
     }
     ctx.stroke();ctx.restore();
-    if(label!==null)text(label+'°',labelPosition,s.color,true);
+    if(label!==null)angleText(label+'°',labelPosition,s.color);
 }
-function handles(){const out=[],shown=id=>args.primitives.some(s=>s.id===id);const add=(p,type,key,extra={})=>{if(p)out.push({p,type,key,...extra});};if(shown('shaft'))g.shaft.forEach((p,i)=>add(p,'shaft',i,{label:i===0?'ヘッド側':'グリップ側',color:i===0?'#58d6ef':'#e9f38a'}));if(shown('hip'))add([g.hip,(g.top+g.bottom)/2],'hip',null,{label:'ヒップ',color:'#ffbf69'});
+function handles(){const out=[],shown=id=>args.primitives.some(s=>s.id===id);const add=(p,type,key,extra={})=>{if(p)out.push({p,type,key,...extra});};if(shown('shaft'))g.shaft.forEach((p,i)=>add(p,'shaft',i,{color:i===0?'#58d6ef':'#e9f38a'}));if(shown('hip'))add([g.hip,(g.top+g.bottom)/2],'hip',null,{color:'#ffbf69'});
 const swayGuide={pelvis_circle:'pelvis',right_knee_circle:'right_knee',left_knee_circle:'left_knee'}[args.active_line];
 if(swayGuide){
     const circle=args.primitives.find(s=>s.id===args.active_line)
@@ -1155,10 +1155,10 @@ if(swayGuide){
     }
 }if(args.active_line==='head'&&shown('head_reference')&&g.head){add(g.head,'head');add([g.head[0]+g.radius,g.head[1]],'radius');}if(args.active_line==='vertical'&&shown('vertical'))add([g.vertical,(g.top+g.bottom)/2],'vertical');if(args.active_line==='back_vertical'&&shown('back_vertical')){const s=args.primitives.find(p=>p.id==='back_vertical');add([g.back_vertical,(s.a[1]+s.b[1])/2],'back_vertical');}if(args.active_line==='ankles'&&shown('ankles'))g.ankles.forEach((x,i)=>add([x,(g.top+g.bottom)/2],'ankles',i));
 if(body){if(['spine','tilt'].includes(args.active_line)&&shown(args.active_line)){
-    add(body.sh,'body','sh',{label:'胸の中心'});
-    add(body.hip,'body','hip',{label:'腰の中心'});
+    add(body.sh,'body','sh');
+    add(body.hip,'body','hip');
     const midpoint=body.sh.map((value,i)=>(value+body.hip[i])/2);
-    add(midpoint,'torsoMove',null,{label:'線全体',color:'#ffffff'});
+    add(midpoint,'torsoMove',null,{color:'#ffffff'});
 }if(args.active_line==='shoulders'&&shown('shoulders')){add(body.ls,'body','ls');add(body.rs,'body','rs');}if(args.active_line==='hip_right_knee'&&shown('hip_right_knee')){add(body.hip,'body','hip');add(body.rk,'body','rk');}if(args.phase==='P1'&&args.active_line==='right_leg_outer'&&shown('right_leg_outer')){add(body.right_ankle_outer,'body','right_ankle_outer');add(body.right_thigh_outer,'body','right_thigh_outer');}}
 shapes.forEach((s,i)=>{if(!visible(s))return;if(['line','arrow','angle'].includes(s.type)){add(s.a,'custom',i,{end:'a'});add(s.b,'custom',i,{end:'b'});if(s.type==='angle')add(s.vertex,'custom',i,{end:'vertex'});}if(s.type==='circle'){add(s.center,'custom',i,{end:'center'});add([s.center[0]+s.radius,s.center[1]],'custom',i,{end:'radius'});}if(s.type==='free'&&s.points.length)add(s.points[0],'custom',i,{end:'free'});});return out;}
 function drawSportsbox(panels){
@@ -1209,7 +1209,7 @@ function render(){if(!args||!img.complete||!img.naturalWidth)return;ctx.clearRec
         ctx.beginPath();ctx.arc(p[0]*canvas.width,p[1]*canvas.height,5,0,Math.PI*2);ctx.fill();
     }
     ctx.restore();
-}if(tool==='move'){for(const h of handles()){ctx.save();ctx.setLineDash([]);ctx.fillStyle=h.color||'#e5f28b';ctx.strokeStyle='#163c30';ctx.lineWidth=2;ctx.beginPath();ctx.arc(h.p[0]*canvas.width,h.p[1]*canvas.height,Math.max(8,canvas.height*.012),0,Math.PI*2);ctx.fill();ctx.stroke();ctx.restore();if(h.label)text(h.label,[h.p[0]+.018,h.p[1]-.015],h.color);}}drawSportsbox(args.sportsbox);
+}if(tool==='move'){for(const h of handles()){ctx.save();ctx.setLineDash([]);ctx.fillStyle=h.color||'#e5f28b';ctx.strokeStyle='#163c30';ctx.lineWidth=2;ctx.beginPath();ctx.arc(h.p[0]*canvas.width,h.p[1]*canvas.height,Math.max(8,canvas.height*.012),0,Math.PI*2);ctx.fill();ctx.stroke();ctx.restore();}}drawSportsbox(args.sportsbox);
     const note=noteBounds();
     if(note)ctx.drawImage(noteImage,note.x,note.y);
     height();
@@ -2965,7 +2965,7 @@ def render_app():
     style["width"]=width_col.selectbox("線の太さ",[1,2,3,4,5,6,8],index=[1,2,3,4,5,6,8].index(style["width"]),format_func=lambda v:f"{v}px",key=f"width_{line}",on_change=clear_outputs)
     if line=="head":st.caption("点線の円はP1の基準位置、もう1つの円は頭の動きに追従します。丸をドラッグすると基準位置・大きさを調整できます。")
     if line in ("spine", "tilt"):
-        st.caption("「線を動かす」で、胸・腰の点をドラッグすると角度が変わります。「線全体」の白い点をドラッグすると、角度を保ったまま移動できます。")
+        st.caption("「線を動かす」で、胸・腰の点をドラッグすると角度が変わります。中央の白い点をドラッグすると、角度を保ったまま移動できます。")
     if line=="tilt":st.caption("白い点線が垂直＝0°です。胸が腰より目標側なら正、反対側ならマイナスで表示します。目標方向は左側の管理線設定で変更できます。")
     if line == "back_vertical":
         st.caption("P1の頭頂から足元までを目安にした垂直線です。丸をドラッグすると左右に移動します。")
